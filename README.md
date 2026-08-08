@@ -4,12 +4,12 @@ Projeto para provisionar uma instancia EC2 na AWS com Terraform e configurar NGI
 
 ## Entrega
 
-- Terraform organizado em `terraform/main.tf`, `terraform/variables.tf` e `terraform/outputs.tf`.
+- Terraform organizado por responsabilidade em `terraform/*.tf`, com `main.tf`, `variables.tf` e `outputs.tf` mantidos como arquivos principais da entrega.
 - State remoto em S3: `unifor-terraform-state-trabalho-final`.
 - EC2 Ubuntu em `sa-east-1` com Security Group para SSH e HTTP.
 - Key Pair criada pelo Terraform a partir da chave publica derivada no runner.
 - Inventario Ansible gerado pelo output `public_ip` do Terraform.
-- Playbook Ansible idempotente com NGINX e pagina web.
+- Playbook Ansible idempotente com NGINX e pagina web, validado por segunda execucao com `changed=0`.
 - Pipeline GitHub Actions cria, configura, valida e destrói os recursos.
 
 ## Secrets Obrigatorios

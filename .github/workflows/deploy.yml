@@ -124,7 +124,13 @@ jobs:
         run: ansible-playbook -i ansible/inventory.ini ansible/playbook.yml
 
       - name: Validar idempotencia Ansible
-        run: ansible-playbook -i ansible/inventory.ini ansible/playbook.yml | tee ansible-second-run.log
+        run: |
+          set -o pipefail
+          ansible-playbook -i ansible/inventory.ini ansible/playbook.yml | tee ansible-second-run.log
+          if ! grep -Eq 'changed=0[[:space:]]+' ansible-second-run.log; then
+            printf 'Playbook nao ficou idempotente: segunda execucao teve changed diferente de 0.\n'
+            exit 1
+          fi
 
       - name: Exibir URL publica
         run: terraform -chdir=terraform output public_url
