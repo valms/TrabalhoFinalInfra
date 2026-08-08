@@ -94,6 +94,10 @@ jobs:
           PUBLIC_KEY="$(ssh-keygen -y -f ~/.ssh/unifor-terraform)"
           printf 'TF_VAR_public_key=%s\n' "${PUBLIC_KEY}" >> "${GITHUB_ENV}"
 
+          RUNNER_PUBLIC_IP="$(curl -fsSL https://checkip.amazonaws.com | tr -d '[:space:]')"
+          printf 'TF_VAR_allowed_ssh_cidr_blocks=["%s/32"]\n' "${RUNNER_PUBLIC_IP}" >> "${GITHUB_ENV}"
+          printf 'SSH liberado apenas para o runner: %s/32\n' "${RUNNER_PUBLIC_IP}"
+
       - name: Terraform init
         run: terraform -chdir=terraform init
 

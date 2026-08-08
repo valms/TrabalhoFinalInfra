@@ -16,6 +16,28 @@ variable "environment" {
   default     = "academic"
 }
 
+variable "vpc_cidr_block" {
+  description = "Bloco CIDR da VPC do projeto."
+  type        = string
+  default     = "10.0.0.0/16"
+
+  validation {
+    condition     = can(cidrnetmask(var.vpc_cidr_block))
+    error_message = "vpc_cidr_block deve ser um CIDR IPv4 valido."
+  }
+}
+
+variable "public_subnet_cidr_block" {
+  description = "Bloco CIDR da subnet publica onde a EC2 sera criada."
+  type        = string
+  default     = "10.0.1.0/24"
+
+  validation {
+    condition     = can(cidrnetmask(var.public_subnet_cidr_block))
+    error_message = "public_subnet_cidr_block deve ser um CIDR IPv4 valido."
+  }
+}
+
 variable "instance_type" {
   description = "Tipo da instancia EC2. Mantenha t3.micro/t2.micro para compatibilidade com opcoes Free Tier."
   type        = string
@@ -56,7 +78,15 @@ variable "public_key" {
 }
 
 variable "allowed_ssh_cidr_blocks" {
-  description = "Blocos CIDR permitidos para acesso SSH. Prefira seu IP publico com /32."
+  description = "Blocos CIDR permitidos para acesso SSH. Use apenas IPs publicos especificos com /32."
   type        = list(string)
-  default     = ["0.0.0.0/0"]
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for cidr in var.allowed_ssh_cidr_blocks :
+      can(cidrnetmask(cidr)) && cidr != "0.0.0.0/0"
+    ])
+    error_message = "allowed_ssh_cidr_blocks deve conter CIDRs IPv4 validos e nao pode liberar SSH para 0.0.0.0/0."
+  }
 }

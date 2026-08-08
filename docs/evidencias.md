@@ -17,7 +17,7 @@ Use este arquivo para colar prints ou trechos dos logs do GitHub Actions e do co
 ## 3. Terraform Plan
 
 - Data/hora:
-- Evidencia esperada: log do passo `Terraform plan` mostrando criacao da EC2, Key Pair e Security Group.
+- Evidencia esperada: log do passo `Terraform plan` mostrando criacao da VPC, subnet publica, Internet Gateway, Route Table, EC2, Key Pair e Security Group.
 - Print/log:
 
 ## 4. Terraform Apply
@@ -29,7 +29,7 @@ Use este arquivo para colar prints ou trechos dos logs do GitHub Actions e do co
 ## 5. Console da AWS
 
 - Data/hora:
-- Evidencia esperada: print da instancia EC2 em execucao na regiao `sa-east-1` e Security Group liberando HTTP e SSH conforme configurado.
+- Evidencia esperada: print da VPC propria, subnet publica, instancia EC2 em execucao na regiao `sa-east-1` e Security Group com HTTP publico (`0.0.0.0/0`) e SSH restrito ao IP do runner (`/32`).
 - Print:
 
 ## 6. Inventario Ansible Gerado
