@@ -59,34 +59,3 @@ variable "root_volume_size" {
     error_message = "O volume raiz deve ter entre 8 e 30 GiB."
   }
 }
-
-variable "key_name" {
-  description = "Nome da Key Pair EC2 que sera criada na AWS."
-  type        = string
-  default     = "unifor-terraform-key"
-}
-
-variable "public_key" {
-  description = "Conteudo da chave publica SSH usado para criar a Key Pair EC2. Nao use chave privada aqui."
-  type        = string
-  sensitive   = true
-
-  validation {
-    condition     = startswith(var.public_key, "ssh-rsa ") || startswith(var.public_key, "ssh-ed25519 ")
-    error_message = "public_key deve ser uma chave publica OpenSSH valida iniciando com ssh-rsa ou ssh-ed25519."
-  }
-}
-
-variable "allowed_ssh_cidr_blocks" {
-  description = "Blocos CIDR permitidos para acesso SSH. Use apenas IPs publicos especificos com /32."
-  type        = list(string)
-  default     = []
-
-  validation {
-    condition = alltrue([
-      for cidr in var.allowed_ssh_cidr_blocks :
-      can(cidrnetmask(cidr)) && cidr != "0.0.0.0/0"
-    ])
-    error_message = "allowed_ssh_cidr_blocks deve conter CIDRs IPv4 validos e nao pode liberar SSH para 0.0.0.0/0."
-  }
-}

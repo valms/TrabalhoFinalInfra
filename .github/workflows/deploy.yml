@@ -74,30 +74,6 @@ jobs:
             --bucket "${STATE_BUCKET}" \
             --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 
-      - name: Instalar Ansible
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ansible
-
-      - name: Preparar chave SSH
-        env:
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-        run: |
-          if [ -z "${EC2_SSH_PRIVATE_KEY}" ]; then
-            printf 'Secret EC2_SSH_PRIVATE_KEY nao configurado. Cadastre a chave privada SSH em Settings > Secrets and variables > Actions.\n'
-            exit 1
-          fi
-
-          mkdir -p ~/.ssh
-          printf '%s\n' "${EC2_SSH_PRIVATE_KEY}" > ~/.ssh/unifor-terraform
-          chmod 600 ~/.ssh/unifor-terraform
-          PUBLIC_KEY="$(ssh-keygen -y -f ~/.ssh/unifor-terraform)"
-          printf 'TF_VAR_public_key=%s\n' "${PUBLIC_KEY}" >> "${GITHUB_ENV}"
-
-          RUNNER_PUBLIC_IP="$(curl -fsSL https://checkip.amazonaws.com | tr -d '[:space:]')"
-          printf 'TF_VAR_allowed_ssh_cidr_blocks=["%s/32"]\n' "${RUNNER_PUBLIC_IP}" >> "${GITHUB_ENV}"
-          printf 'SSH liberado apenas para o runner: %s/32\n' "${RUNNER_PUBLIC_IP}"
-
       - name: Terraform init
         run: terraform -chdir=terraform init
 
@@ -110,31 +86,8 @@ jobs:
       - name: Terraform apply
         run: terraform -chdir=terraform apply -auto-approve
 
-      - name: Gerar inventario Ansible
-        run: ./scripts/generate-inventory.sh
-
-      - name: Aguardar SSH
-        run: |
-          PUBLIC_IP="$(terraform -chdir=terraform output -raw public_ip)"
-          for attempt in $(seq 1 30); do
-            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i ~/.ssh/unifor-terraform ubuntu@"${PUBLIC_IP}" true; then
-              exit 0
-            fi
-            sleep 10
-          done
-          exit 1
-
-      - name: Executar playbook Ansible
-        run: ansible-playbook -i ansible/inventory.ini ansible/playbook.yml
-
-      - name: Validar idempotencia Ansible
-        run: |
-          set -o pipefail
-          ansible-playbook -i ansible/inventory.ini ansible/playbook.yml | tee ansible-second-run.log
-          if ! grep -Eq 'changed=0[[:space:]]+' ansible-second-run.log; then
-            printf 'Playbook nao ficou idempotente: segunda execucao teve changed diferente de 0.\n'
-            exit 1
-          fi
+      - name: Deploy NGINX via SSM
+        run: ./scripts/deploy-via-ssm.sh
 
       - name: Exibir URL publica
         run: terraform -chdir=terraform output public_url
@@ -159,21 +112,6 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
-
-      - name: Preparar variavel da chave publica
-        env:
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-        run: |
-          if [ -z "${EC2_SSH_PRIVATE_KEY}" ]; then
-            printf 'Secret EC2_SSH_PRIVATE_KEY nao configurado. Cadastre a chave privada SSH em Settings > Secrets and variables > Actions.\n'
-            exit 1
-          fi
-
-          mkdir -p ~/.ssh
-          printf '%s\n' "${EC2_SSH_PRIVATE_KEY}" > ~/.ssh/unifor-terraform
-          chmod 600 ~/.ssh/unifor-terraform
-          PUBLIC_KEY="$(ssh-keygen -y -f ~/.ssh/unifor-terraform)"
-          printf 'TF_VAR_public_key=%s\n' "${PUBLIC_KEY}" >> "${GITHUB_ENV}"
 
       - name: Terraform init
         run: terraform -chdir=terraform init
