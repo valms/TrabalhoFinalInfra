@@ -20,7 +20,7 @@ on:
         default: ""
         type: string
       destroy_bootstrap:
-        description: "Tambem destruir bucket S3/bootstrap"
+        description: "Tambem destruir bucket S3 do state"
         required: false
         default: false
         type: boolean
@@ -95,7 +95,10 @@ jobs:
           printf 'TF_VAR_public_key=%s\n' "${PUBLIC_KEY}" >> "${GITHUB_ENV}"
 
       - name: Terraform init
-        run: terraform -chdir=terraform init -backend-config=backend.hcl.example
+        run: terraform -chdir=terraform init
+
+      - name: Terraform validate
+        run: terraform -chdir=terraform validate
 
       - name: Terraform plan
         run: terraform -chdir=terraform plan
@@ -163,12 +166,15 @@ jobs:
           printf 'TF_VAR_public_key=%s\n' "${PUBLIC_KEY}" >> "${GITHUB_ENV}"
 
       - name: Terraform init
-        run: terraform -chdir=terraform init -backend-config=backend.hcl.example
+        run: terraform -chdir=terraform init
+
+      - name: Terraform validate
+        run: terraform -chdir=terraform validate
 
       - name: Terraform destroy infraestrutura principal
         run: terraform -chdir=terraform destroy -auto-approve
 
-      - name: Esvaziar bucket versionado do bootstrap
+      - name: Esvaziar bucket versionado do state
         if: ${{ inputs.destroy_bootstrap }}
         run: |
           BUCKET="unifor-terraform-state-trabalho-final"
@@ -190,7 +196,7 @@ jobs:
             aws s3api delete-objects --bucket "${BUCKET}" --delete file:///tmp/s3-delete-markers.json
           fi
 
-      - name: Remover bucket S3 do bootstrap
+      - name: Remover bucket S3 do state
         if: ${{ inputs.destroy_bootstrap }}
         run: aws s3 rb s3://unifor-terraform-state-trabalho-final
 

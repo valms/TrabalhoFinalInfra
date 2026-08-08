@@ -1,4 +1,0 @@
-public_key = "ssh-ed25519 AAAA... usuario@maquina"
-
-# Optional: restrict SSH to your public IP.
-# allowed_ssh_cidr_blocks = ["203.0.113.10/32"]

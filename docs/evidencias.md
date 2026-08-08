@@ -7,7 +7,7 @@ Use este arquivo para registrar prints, comandos e resultados do trabalho final.
 - Data/hora:
 - Comando:
   ```bash
-  terraform -chdir=terraform init -backend-config=backend.hcl
+  terraform -chdir=terraform init
   ```
 - Evidencia:
 
@@ -88,6 +88,6 @@ Use este arquivo para registrar prints, comandos e resultados do trabalho final.
 
 - Data/hora:
 - Evidencias:
-  - `terraform.tfvars` nao versionado
+  - `tfstate` nao versionado
   - chave privada nao versionada
   - secrets usados somente localmente ou no GitHub Actions

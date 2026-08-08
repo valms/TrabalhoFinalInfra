@@ -1,7 +1,13 @@
 terraform {
   required_version = ">= 1.6.0"
 
-  backend "s3" {}
+  backend "s3" {
+    bucket       = "unifor-terraform-state-trabalho-final"
+    key          = "trabalho-final/terraform.tfstate"
+    region       = "sa-east-1"
+    encrypt      = true
+    use_lockfile = true
+  }
 
   required_providers {
     aws = {
