@@ -55,6 +55,38 @@ Execucao manual:
 - `confirm_destroy=DESTROY`: confirmacao obrigatoria para destroy.
 - `destroy_bootstrap=true`: remove tambem o bucket S3 de state.
 
+## Destroy Pela Pipeline
+
+Use o destroy ao final da apresentacao para cumprir a higiene de ambiente e evitar custos na AWS.
+
+Passo a passo:
+
+1. Acesse o repositorio no GitHub.
+2. Abra a aba `Actions`.
+3. Selecione o workflow `Deploy Infraestrutura AWS`.
+4. Clique em `Run workflow`.
+5. Em `Use workflow from`, selecione a branch que contem o workflow.
+6. Em `action`, selecione `destroy`.
+7. Em `confirm_destroy`, digite exatamente `DESTROY`.
+8. Em `destroy_bootstrap`, escolha se o bucket S3 de state tambem sera removido.
+9. Clique em `Run workflow`.
+
+Opcoes de destroy:
+
+- `destroy_bootstrap=false`: remove apenas a infraestrutura principal criada pelo Terraform, como EC2, Security Group e Key Pair. Use esta opcao se quiser preservar o bucket S3 de state para novos testes.
+- `destroy_bootstrap=true`: remove a infraestrutura principal e tambem apaga o bucket S3 usado pelo state remoto. Use esta opcao no encerramento definitivo do trabalho.
+
+O workflow exige `confirm_destroy=DESTROY` para evitar destruicao acidental. Se esse valor nao for informado exatamente assim, a pipeline falha antes de remover recursos.
+
+Antes de remover o bucket S3, a pipeline apaga versoes e delete markers do bucket versionado. Isso e necessario porque buckets versionados nao podem ser removidos enquanto ainda possuem objetos antigos.
+
+Evidencias recomendadas do destroy:
+
+- Print do workflow com `action=destroy`.
+- Log do passo `Terraform destroy infraestrutura principal`.
+- Se usar `destroy_bootstrap=true`, log dos passos `Esvaziar bucket versionado do state` e `Remover bucket S3 do state`.
+- Print do console da AWS mostrando ausencia da EC2 apos o destroy.
+
 ## Evidencias Para Apresentacao
 
 Use os logs do GitHub Actions e preencha `docs/evidencias.md` com:

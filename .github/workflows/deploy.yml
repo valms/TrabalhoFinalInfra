@@ -16,12 +16,12 @@ on:
           - destroy
       confirm_destroy:
         description: "Digite DESTROY para confirmar a destruicao"
-        required: true
+        required: false
         default: ""
         type: string
       destroy_bootstrap:
         description: "Tambem destruir bucket S3 do state"
-        required: true
+        required: false
         default: false
         type: boolean
 
