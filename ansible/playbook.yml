@@ -1,0 +1,37 @@
+---
+- name: Configure NGINX web server
+  hosts: web
+  become: true
+  gather_facts: true
+
+  handlers:
+    - name: Restart nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+
+    - name: Publish web page
+      ansible.builtin.copy:
+        src: files/index.html
+        dest: /var/www/html/index.html
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart nginx
+
+    - name: Ensure nginx is enabled and running
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: true

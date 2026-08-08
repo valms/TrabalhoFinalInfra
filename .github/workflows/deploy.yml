@@ -1,0 +1,185 @@
+name: Deploy Infraestrutura AWS
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Acao que sera executada"
+        required: true
+        default: "deploy"
+        type: choice
+        options:
+          - deploy
+          - destroy
+      confirm_destroy:
+        description: "Digite DESTROY para confirmar a destruicao"
+        required: false
+        default: ""
+        type: string
+      destroy_bootstrap:
+        description: "Tambem destruir bucket S3/bootstrap"
+        required: false
+        default: false
+        type: boolean
+
+env:
+  AWS_REGION: sa-east-1
+  STATE_BUCKET: unifor-terraform-state-trabalho-final
+  TF_IN_AUTOMATION: true
+  TF_INPUT: false
+
+jobs:
+  deploy:
+    name: Deploy com Terraform e Ansible
+    if: ${{ inputs.action == 'deploy' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar repositorio
+        uses: actions/checkout@v6
+
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configurar Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Preparar bucket S3 do state
+        run: |
+          if aws s3api head-bucket --bucket "${STATE_BUCKET}" 2>/dev/null; then
+            printf 'Bucket de state ja existe: %s\n' "${STATE_BUCKET}"
+          else
+            aws s3api create-bucket \
+              --bucket "${STATE_BUCKET}" \
+              --region "${AWS_REGION}" \
+              --create-bucket-configuration LocationConstraint="${AWS_REGION}"
+          fi
+
+          aws s3api put-public-access-block \
+            --bucket "${STATE_BUCKET}" \
+            --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+          aws s3api put-bucket-versioning \
+            --bucket "${STATE_BUCKET}" \
+            --versioning-configuration Status=Enabled
+          aws s3api put-bucket-encryption \
+            --bucket "${STATE_BUCKET}" \
+            --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+
+      - name: Instalar Ansible
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ansible
+
+      - name: Preparar chave SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/unifor-terraform
+          chmod 600 ~/.ssh/unifor-terraform
+
+      - name: Terraform init
+        run: terraform -chdir=terraform init -backend-config=backend.hcl.example
+
+      - name: Terraform plan
+        env:
+          TF_VAR_public_key: ${{ secrets.TF_VAR_PUBLIC_KEY }}
+        run: terraform -chdir=terraform plan
+
+      - name: Terraform apply
+        env:
+          TF_VAR_public_key: ${{ secrets.TF_VAR_PUBLIC_KEY }}
+        run: terraform -chdir=terraform apply -auto-approve
+
+      - name: Gerar inventario Ansible
+        run: ./scripts/generate-inventory.sh
+
+      - name: Aguardar SSH
+        run: |
+          PUBLIC_IP="$(terraform -chdir=terraform output -raw public_ip)"
+          for attempt in $(seq 1 30); do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i ~/.ssh/unifor-terraform ubuntu@"${PUBLIC_IP}" true; then
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
+
+      - name: Executar playbook Ansible
+        run: ansible-playbook -i ansible/inventory.ini ansible/playbook.yml
+
+      - name: Validar idempotencia Ansible
+        run: ansible-playbook -i ansible/inventory.ini ansible/playbook.yml | tee ansible-second-run.log
+
+      - name: Exibir URL publica
+        run: terraform -chdir=terraform output public_url
+
+  destroy:
+    name: Destruir recursos Terraform
+    if: ${{ inputs.action == 'destroy' && inputs.confirm_destroy == 'DESTROY' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar repositorio
+        uses: actions/checkout@v6
+
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configurar Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: terraform -chdir=terraform init -backend-config=backend.hcl.example
+
+      - name: Terraform destroy infraestrutura principal
+        env:
+          TF_VAR_public_key: ${{ secrets.TF_VAR_PUBLIC_KEY }}
+        run: terraform -chdir=terraform destroy -auto-approve
+
+      - name: Esvaziar bucket versionado do bootstrap
+        if: ${{ inputs.destroy_bootstrap }}
+        run: |
+          BUCKET="unifor-terraform-state-trabalho-final"
+          VERSIONS="$(aws s3api list-object-versions \
+            --bucket "${BUCKET}" \
+            --query='Versions[].{Key:Key,VersionId:VersionId}' \
+            --output json)"
+          if [ "${VERSIONS}" != "null" ] && [ "${VERSIONS}" != "[]" ]; then
+            printf '{"Objects":%s,"Quiet":true}\n' "${VERSIONS}" > /tmp/s3-versions.json
+            aws s3api delete-objects --bucket "${BUCKET}" --delete file:///tmp/s3-versions.json
+          fi
+
+          DELETE_MARKERS="$(aws s3api list-object-versions \
+            --bucket "${BUCKET}" \
+            --query='DeleteMarkers[].{Key:Key,VersionId:VersionId}' \
+            --output json)"
+          if [ "${DELETE_MARKERS}" != "null" ] && [ "${DELETE_MARKERS}" != "[]" ]; then
+            printf '{"Objects":%s,"Quiet":true}\n' "${DELETE_MARKERS}" > /tmp/s3-delete-markers.json
+            aws s3api delete-objects --bucket "${BUCKET}" --delete file:///tmp/s3-delete-markers.json
+          fi
+
+      - name: Remover bucket S3 do bootstrap
+        if: ${{ inputs.destroy_bootstrap }}
+        run: aws s3 rb s3://unifor-terraform-state-trabalho-final
+
+  destroy-guard:
+    name: Bloqueio de destruicao sem confirmacao
+    if: ${{ inputs.action == 'destroy' && inputs.confirm_destroy != 'DESTROY' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Parar destroy inseguro
+        run: |
+          printf 'Destroy bloqueado. Defina confirm_destroy=DESTROY para continuar.\n'
+          exit 1
