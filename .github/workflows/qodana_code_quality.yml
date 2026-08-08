@@ -7,6 +7,7 @@ on:
     branches:
       - main
       - develop
+      - feature/infra-ec2-ansible
 
 jobs:
   qodana:

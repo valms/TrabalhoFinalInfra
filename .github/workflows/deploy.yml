@@ -1,6 +1,9 @@
 name: Deploy Infraestrutura AWS
 
 on:
+  push:
+    branches:
+      - feature/infra-ec2-ansible
   workflow_dispatch:
     inputs:
       action:
@@ -31,7 +34,7 @@ env:
 jobs:
   deploy:
     name: Deploy com Terraform e Ansible
-    if: ${{ inputs.action == 'deploy' }}
+    if: ${{ github.event_name == 'push' || inputs.action == 'deploy' }}
     runs-on: ubuntu-latest
 
     steps:
