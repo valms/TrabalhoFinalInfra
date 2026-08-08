@@ -80,9 +80,16 @@ jobs:
           sudo apt-get install -y ansible
 
       - name: Preparar chave SSH
+        env:
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
         run: |
+          if [ -z "${EC2_SSH_PRIVATE_KEY}" ]; then
+            printf 'Secret EC2_SSH_PRIVATE_KEY nao configurado. Cadastre a chave privada SSH em Settings > Secrets and variables > Actions.\n'
+            exit 1
+          fi
+
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/unifor-terraform
+          printf '%s\n' "${EC2_SSH_PRIVATE_KEY}" > ~/.ssh/unifor-terraform
           chmod 600 ~/.ssh/unifor-terraform
           PUBLIC_KEY="$(ssh-keygen -y -f ~/.ssh/unifor-terraform)"
           printf 'TF_VAR_public_key=%s\n' "${PUBLIC_KEY}" >> "${GITHUB_ENV}"
@@ -141,9 +148,16 @@ jobs:
           terraform_wrapper: false
 
       - name: Preparar variavel da chave publica
+        env:
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
         run: |
+          if [ -z "${EC2_SSH_PRIVATE_KEY}" ]; then
+            printf 'Secret EC2_SSH_PRIVATE_KEY nao configurado. Cadastre a chave privada SSH em Settings > Secrets and variables > Actions.\n'
+            exit 1
+          fi
+
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/unifor-terraform
+          printf '%s\n' "${EC2_SSH_PRIVATE_KEY}" > ~/.ssh/unifor-terraform
           chmod 600 ~/.ssh/unifor-terraform
           PUBLIC_KEY="$(ssh-keygen -y -f ~/.ssh/unifor-terraform)"
           printf 'TF_VAR_public_key=%s\n' "${PUBLIC_KEY}" >> "${GITHUB_ENV}"
