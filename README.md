@@ -120,7 +120,9 @@ Secrets necessarios:
 - `AWS_ACCESS_KEY_ID`
 - `AWS_SECRET_ACCESS_KEY`
 - `EC2_SSH_PRIVATE_KEY`
-- `TF_VAR_PUBLIC_KEY`
+
+O workflow deriva a chave publica a partir de `EC2_SSH_PRIVATE_KEY`, entao nao e necessario cadastrar `TF_VAR_PUBLIC_KEY`.
+`AWS_REGION` ja esta definido no workflow como `sa-east-1`.
 
 Execucao manual:
 

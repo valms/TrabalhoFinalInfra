@@ -84,18 +84,16 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/unifor-terraform
           chmod 600 ~/.ssh/unifor-terraform
+          PUBLIC_KEY="$(ssh-keygen -y -f ~/.ssh/unifor-terraform)"
+          printf 'TF_VAR_public_key=%s\n' "${PUBLIC_KEY}" >> "${GITHUB_ENV}"
 
       - name: Terraform init
         run: terraform -chdir=terraform init -backend-config=backend.hcl.example
 
       - name: Terraform plan
-        env:
-          TF_VAR_public_key: ${{ secrets.TF_VAR_PUBLIC_KEY }}
         run: terraform -chdir=terraform plan
 
       - name: Terraform apply
-        env:
-          TF_VAR_public_key: ${{ secrets.TF_VAR_PUBLIC_KEY }}
         run: terraform -chdir=terraform apply -auto-approve
 
       - name: Gerar inventario Ansible
@@ -142,12 +140,18 @@ jobs:
         with:
           terraform_wrapper: false
 
+      - name: Preparar variavel da chave publica
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/unifor-terraform
+          chmod 600 ~/.ssh/unifor-terraform
+          PUBLIC_KEY="$(ssh-keygen -y -f ~/.ssh/unifor-terraform)"
+          printf 'TF_VAR_public_key=%s\n' "${PUBLIC_KEY}" >> "${GITHUB_ENV}"
+
       - name: Terraform init
         run: terraform -chdir=terraform init -backend-config=backend.hcl.example
 
       - name: Terraform destroy infraestrutura principal
-        env:
-          TF_VAR_public_key: ${{ secrets.TF_VAR_PUBLIC_KEY }}
         run: terraform -chdir=terraform destroy -auto-approve
 
       - name: Esvaziar bucket versionado do bootstrap
