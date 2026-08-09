@@ -15,4 +15,6 @@ resource "aws_instance" "web" {
   tags = {
     Name = "${var.project_name}-web"
   }
+
+  depends_on = [aws_iam_role_policy_attachment.ssm_core]
 }

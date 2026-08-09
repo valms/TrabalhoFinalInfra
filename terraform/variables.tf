@@ -49,6 +49,12 @@ variable "instance_type" {
   }
 }
 
+variable "ssh_user" {
+  description = "Usuario SSH padrao da AMI usada no inventario Ansible opcional."
+  type        = string
+  default     = "ubuntu"
+}
+
 variable "root_volume_size" {
   description = "Tamanho do volume EBS raiz em GiB."
   type        = number

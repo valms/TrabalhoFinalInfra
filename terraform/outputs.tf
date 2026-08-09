@@ -17,3 +17,8 @@ output "public_url" {
   description = "URL HTTP da pagina publicada no NGINX."
   value       = "http://${aws_instance.web.public_ip}"
 }
+
+output "ssh_user" {
+  description = "Usuario SSH padrao da AMI Ubuntu."
+  value       = var.ssh_user
+}
