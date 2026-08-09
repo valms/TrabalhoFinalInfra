@@ -90,7 +90,10 @@ jobs:
         run: ./scripts/deploy-via-ssm.sh
 
       - name: Exibir URL publica
-        run: terraform -chdir=terraform output public_url
+        run: |
+          PUBLIC_URL="$(terraform -chdir=terraform output -raw public_url)"
+          printf 'URL publica: %s\n' "${PUBLIC_URL}"
+          printf '## Deploy publicado\n\n- URL publica: [%s](%s)\n' "${PUBLIC_URL}" "${PUBLIC_URL}" >> "${GITHUB_STEP_SUMMARY}"
 
   destroy:
     name: Destruir recursos Terraform
