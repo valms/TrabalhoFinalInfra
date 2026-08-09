@@ -1,7 +1,11 @@
 resource "aws_security_group" "web" {
-  name        = "${var.project_name}-web-sg"
+  name_prefix = "${var.project_name}-web-sg-"
   description = "Permite HTTP publico; administracao via AWS Systems Manager"
   vpc_id      = aws_vpc.this.id
+
+  lifecycle {
+    create_before_destroy = true
+  }
 
   tags = {
     Name = "${var.project_name}-web-sg"
