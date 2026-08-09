@@ -8,6 +8,28 @@ INDEX_FILE="${ROOT_DIR}/ansible/files/index.html"
 INSTANCE_ID="$(terraform -chdir="${TERRAFORM_DIR}" output -raw instance_id)"
 PAGE_HTML_B64="$(base64 -w0 "${INDEX_FILE}")"
 
+printf 'Aguardando instancia EC2 ficar running: %s\n' "${INSTANCE_ID}"
+aws ec2 wait instance-running --instance-ids "${INSTANCE_ID}"
+
+printf 'Aguardando instancia ficar online no AWS Systems Manager: %s\n' "${INSTANCE_ID}"
+for attempt in {1..60}; do
+  PING_STATUS="$(aws ssm describe-instance-information \
+    --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
+    --query 'InstanceInformationList[0].PingStatus' \
+    --output text)"
+
+  if [ "${PING_STATUS}" = "Online" ]; then
+    break
+  fi
+
+  if [ "${attempt}" -eq 60 ]; then
+    printf 'Instancia %s nao ficou online no SSM. Ultimo status: %s\n' "${INSTANCE_ID}" "${PING_STATUS}" >&2
+    exit 1
+  fi
+
+  sleep 10
+done
+
 COMMANDS_JSON="$(jq -nc --arg html "${PAGE_HTML_B64}" '[
   "set -euo pipefail",
   "export DEBIAN_FRONTEND=noninteractive",
