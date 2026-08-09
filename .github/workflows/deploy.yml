@@ -75,7 +75,10 @@ jobs:
             --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 
       - name: Terraform init
-        run: terraform -chdir=terraform init
+        run: |
+          terraform -chdir=terraform init \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="region=${AWS_REGION}"
 
       - name: Terraform validate
         run: terraform -chdir=terraform validate
@@ -117,7 +120,10 @@ jobs:
           terraform_wrapper: false
 
       - name: Terraform init
-        run: terraform -chdir=terraform init
+        run: |
+          terraform -chdir=terraform init \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="region=${AWS_REGION}"
 
       - name: Terraform validate
         run: terraform -chdir=terraform validate
@@ -128,28 +134,27 @@ jobs:
       - name: Esvaziar bucket versionado do state
         if: ${{ inputs.destroy_bootstrap }}
         run: |
-          BUCKET="unifor-terraform-state-trabalho-final"
           VERSIONS="$(aws s3api list-object-versions \
-            --bucket "${BUCKET}" \
+            --bucket "${STATE_BUCKET}" \
             --query='Versions[].{Key:Key,VersionId:VersionId}' \
             --output json)"
           if [ "${VERSIONS}" != "null" ] && [ "${VERSIONS}" != "[]" ]; then
             printf '{"Objects":%s,"Quiet":true}\n' "${VERSIONS}" > /tmp/s3-versions.json
-            aws s3api delete-objects --bucket "${BUCKET}" --delete file:///tmp/s3-versions.json
+            aws s3api delete-objects --bucket "${STATE_BUCKET}" --delete file:///tmp/s3-versions.json
           fi
 
           DELETE_MARKERS="$(aws s3api list-object-versions \
-            --bucket "${BUCKET}" \
+            --bucket "${STATE_BUCKET}" \
             --query='DeleteMarkers[].{Key:Key,VersionId:VersionId}' \
             --output json)"
           if [ "${DELETE_MARKERS}" != "null" ] && [ "${DELETE_MARKERS}" != "[]" ]; then
             printf '{"Objects":%s,"Quiet":true}\n' "${DELETE_MARKERS}" > /tmp/s3-delete-markers.json
-            aws s3api delete-objects --bucket "${BUCKET}" --delete file:///tmp/s3-delete-markers.json
+            aws s3api delete-objects --bucket "${STATE_BUCKET}" --delete file:///tmp/s3-delete-markers.json
           fi
 
       - name: Remover bucket S3 do state
         if: ${{ inputs.destroy_bootstrap }}
-        run: aws s3 rb s3://unifor-terraform-state-trabalho-final
+        run: aws s3 rb "s3://${STATE_BUCKET}"
 
   destroy-guard:
     name: Bloqueio de destruicao sem confirmacao
