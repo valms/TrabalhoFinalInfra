@@ -30,7 +30,7 @@ for attempt in {1..60}; do
   sleep 10
 done
 
-COMMANDS_JSON="$(printf '["set -eu","export DEBIAN_FRONTEND=noninteractive","if command -v cloud-init >/dev/null 2>&1; then cloud-init status --wait; fi","if ! command -v nginx >/dev/null 2>&1; then apt-get update && apt-get install -y nginx; fi","tmp=$(mktemp)","printf %%s \"%s\" | base64 -d > ${tmp}","if ! cmp -s ${tmp} /var/www/html/index.html; then install -o root -g root -m 0644 ${tmp} /var/www/html/index.html && systemctl restart nginx; fi","rm -f ${tmp}","systemctl enable --now nginx"]' "${PAGE_HTML_B64}")"
+COMMANDS_JSON="$(printf '["set -eu","export DEBIAN_FRONTEND=noninteractive","if command -v cloud-init >/dev/null 2>&1; then cloud-init status --wait; fi","if ! command -v nginx >/dev/null 2>&1; then apt-get update && apt-get install -y nginx; fi","tmp=$(mktemp)","printf %%s %s | base64 -d > ${tmp}","if ! cmp -s ${tmp} /var/www/html/index.html; then install -o root -g root -m 0644 ${tmp} /var/www/html/index.html && systemctl restart nginx; fi","rm -f ${tmp}","systemctl enable --now nginx"]' "${PAGE_HTML_B64}")"
 
 COMMAND_ID="$(aws ssm send-command \
   --instance-ids "${INSTANCE_ID}" \
