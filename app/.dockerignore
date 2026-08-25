@@ -1,0 +1,6 @@
+server
+server-linux-amd64
+*.db
+*.db-shm
+*.db-wal
+.git

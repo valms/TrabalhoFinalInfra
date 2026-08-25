@@ -1,0 +1,12 @@
+variable "aws_region" {
+  type    = string
+  default = "sa-east-1"
+}
+
+variable "state_bucket_name" {
+  type = string
+}
+
+variable "ssm_transfer_bucket_name" {
+  type = string
+}

@@ -1,0 +1,3 @@
+kubernetes_version = "select-current-supported-eks-version"
+allowed_api_cidrs  = ["203.0.113.10/32"]
+availability_zones = ["sa-east-1a", "sa-east-1b"]

@@ -39,20 +39,14 @@ variable "public_subnet_cidr_block" {
 }
 
 variable "instance_type" {
-  description = "Tipo da instancia EC2. Mantenha t3.micro/t2.micro para compatibilidade com opcoes Free Tier."
+  description = "Tipo da instancia EC2 (dev menor, prod maior)."
   type        = string
   default     = "t3.micro"
 
   validation {
-    condition     = contains(["t2.micro", "t3.micro"], var.instance_type)
-    error_message = "Use t2.micro ou t3.micro para manter o projeto alinhado com opcoes Free Tier."
+    condition     = contains(["t3.micro", "t3.small"], var.instance_type)
+    error_message = "Use t3.micro ou t3.small (EBS otimizado)."
   }
-}
-
-variable "ssh_user" {
-  description = "Usuario SSH padrao da AMI usada no inventario Ansible opcional."
-  type        = string
-  default     = "ubuntu"
 }
 
 variable "root_volume_size" {

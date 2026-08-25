@@ -1,168 +1,193 @@
-name: Deploy Infraestrutura AWS
-
+name: Deploy demonstrativo
 on:
-  push:
-    branches:
-      - feature/infra-ec2-ansible
   workflow_dispatch:
     inputs:
-      action:
-        description: "Acao que sera executada"
+      target:
+        description: Infrastructure target
         required: true
-        default: "deploy"
         type: choice
-        options:
-          - deploy
-          - destroy
+        options: [ec2-dev, ec2-prod, eks-demo]
+      action:
+        description: Terraform action
+        required: true
+        type: choice
+        options: [plan, apply, destroy]
       confirm_destroy:
-        description: "Digite DESTROY para confirmar a destruicao"
+        description: Type DESTROY for destroy
         required: false
-        default: ""
         type: string
-      destroy_bootstrap:
-        description: "Tambem destruir bucket S3 do state"
-        required: false
-        default: false
-        type: boolean
 
-env:
-  AWS_REGION: sa-east-1
-  STATE_BUCKET: unifor-terraform-state-trabalho-final
-  TF_IN_AUTOMATION: true
-  TF_INPUT: false
+permissions:
+  contents: read
+
+concurrency:
+  group: infra-${{ inputs.target }}
+  cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Deploy com Terraform e Ansible
-    if: ${{ github.event_name == 'push' || inputs.action == 'deploy' }}
+  quality:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Baixar repositorio
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/go.mod
+      - run: go test ./...
+        working-directory: app
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive terraform
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+      - run: helm lint helm/web-app
+      - uses: terraform-linters/setup-tflint@v4
+      - run: |
+          for dir in terraform terraform/bootstrap terraform/eks; do
+            tflint --chdir "$dir" --init
+            tflint --chdir "$dir"
+          done
+      - name: Checkov
+        run: |
+          pip install checkov
+          checkov -d terraform --framework terraform
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .gitleaks.toml
 
-      - name: Configurar credenciais AWS
-        uses: aws-actions/configure-aws-credentials@v6.2.3
+  plan:
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Configurar Terraform
-        uses: hashicorp/setup-terraform@v4.0.1
-        with:
-          terraform_wrapper: false
-
-      - name: Preparar bucket S3 do state
+          aws-region: sa-east-1
+      - name: Select root and guard destruction
+        env:
+          TARGET: ${{ inputs.target }}
+          ACTION: ${{ inputs.action }}
+          CONFIRM: ${{ inputs.confirm_destroy }}
         run: |
-          if aws s3api head-bucket --bucket "${STATE_BUCKET}" 2>/dev/null; then
-            printf 'Bucket de state ja existe: %s\n' "${STATE_BUCKET}"
-          else
-            aws s3api create-bucket \
-              --bucket "${STATE_BUCKET}" \
-              --region "${AWS_REGION}" \
-              --create-bucket-configuration LocationConstraint="${AWS_REGION}"
+          if [ "$ACTION" = destroy ] && [ "$CONFIRM" != DESTROY ]; then
+            printf 'Destroy requires confirm_destroy=DESTROY\n' >&2
+            exit 1
           fi
-
-          aws s3api put-public-access-block \
-            --bucket "${STATE_BUCKET}" \
-            --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-          aws s3api put-bucket-versioning \
-            --bucket "${STATE_BUCKET}" \
-            --versioning-configuration Status=Enabled
-          aws s3api put-bucket-encryption \
-            --bucket "${STATE_BUCKET}" \
-            --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-
-      - name: Terraform init
+          case "$TARGET" in
+            ec2-dev) ROOT=terraform; KEY=trabalho-final/terraform.tfstate; TFVARS=env/dev.tfvars.example ;;
+            ec2-prod) ROOT=terraform; KEY=ec2/prod/terraform.tfstate; TFVARS=env/prod.tfvars.example ;;
+            eks-demo) ROOT=terraform/eks; KEY=eks-demo/terraform.tfstate ;;
+            *) exit 1 ;;
+          esac
+          printf 'ROOT=%s\nKEY=%s\nTFVARS=%s\nTF_DATA_DIR=%s\n' \
+            "$ROOT" "$KEY" "$TFVARS" "$RUNNER_TEMP/terraform-$TARGET" >> "$GITHUB_ENV"
+      - name: Terraform init and validate
+        env:
+          STATE_BUCKET: ${{ vars.STATE_BUCKET }}
         run: |
-          terraform -chdir=terraform init \
-            -backend-config="bucket=${STATE_BUCKET}" \
-            -backend-config="region=${AWS_REGION}"
-
-      - name: Terraform validate
-        run: terraform -chdir=terraform validate
-
+          : "${STATE_BUCKET:?Configure STATE_BUCKET repository variable}"
+          terraform -chdir="$ROOT" init -reconfigure -input=false \
+            -backend-config="bucket=$STATE_BUCKET" -backend-config="key=$KEY" -backend-config="region=sa-east-1"
+          terraform -chdir="$ROOT" fmt -check
+          terraform -chdir="$ROOT" validate
       - name: Terraform plan
-        run: terraform -chdir=terraform plan
-
-      - name: Terraform apply
-        run: terraform -chdir=terraform apply -auto-approve
-
-      - name: Deploy NGINX via SSM
-        run: ./scripts/deploy-via-ssm.sh
-
-      - name: Exibir URL publica
+        env:
+          ACTION: ${{ inputs.action }}
+          TF_VAR_kubernetes_version: ${{ vars.EKS_KUBERNETES_VERSION }}
+          TF_VAR_allowed_api_cidrs: ${{ vars.EKS_ALLOWED_API_CIDRS }}
+          TF_VAR_availability_zones: ${{ vars.EKS_AVAILABILITY_ZONES }}
         run: |
-          PUBLIC_URL="$(terraform -chdir=terraform output -raw public_url)"
-          printf 'URL publica: %s\n' "${PUBLIC_URL}"
-          printf '## Deploy publicado\n\n- URL publica: [%s](%s)\n' "${PUBLIC_URL}" "${PUBLIC_URL}" >> "${GITHUB_STEP_SUMMARY}"
+          VAR_FILE=()
+          if [ -n "$TFVARS" ]; then VAR_FILE=("-var-file=$TFVARS"); fi
+          if [ "$ACTION" = destroy ]; then
+            terraform -chdir="$ROOT" plan "${VAR_FILE[@]}" -destroy -out=plan.tfplan
+          else
+            terraform -chdir="$ROOT" plan "${VAR_FILE[@]}" -out=plan.tfplan
+          fi
+          terraform -chdir="$ROOT" show -no-color plan.tfplan > "$RUNNER_TEMP/plan.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ inputs.target }}
+          path: |
+            ${{ env.ROOT }}/plan.tfplan
+          retention-days: 1
 
-  destroy:
-    name: Destruir recursos Terraform
-    if: ${{ inputs.action == 'destroy' && inputs.confirm_destroy == 'DESTROY' }}
+  apply:
+    if: ${{ inputs.action != 'plan' }}
+    needs: plan
     runs-on: ubuntu-latest
-
+    timeout-minutes: 50
+    environment: ${{ inputs.target }}
     steps:
-      - name: Baixar repositorio
-        uses: actions/checkout@v7
-
-      - name: Configurar credenciais AWS
-        uses: aws-actions/configure-aws-credentials@v6.2.3
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Configurar Terraform
-        uses: hashicorp/setup-terraform@v4.0.1
+          aws-region: sa-east-1
+      - uses: actions/download-artifact@v4
         with:
-          terraform_wrapper: false
-
-      - name: Terraform init
+          name: terraform-plan-${{ inputs.target }}
+      - name: Terraform apply approved plan
+        env:
+          TARGET: ${{ inputs.target }}
+          STATE_BUCKET: ${{ vars.STATE_BUCKET }}
         run: |
-          terraform -chdir=terraform init \
-            -backend-config="bucket=${STATE_BUCKET}" \
-            -backend-config="region=${AWS_REGION}"
-
-      - name: Terraform validate
-        run: terraform -chdir=terraform validate
-
-      - name: Terraform destroy infraestrutura principal
-        run: terraform -chdir=terraform destroy -auto-approve
-
-      - name: Esvaziar bucket versionado do state
-        if: ${{ inputs.destroy_bootstrap }}
+          case "$TARGET" in
+            ec2-dev) ROOT=terraform; KEY=trabalho-final/terraform.tfstate ;;
+            ec2-prod) ROOT=terraform; KEY=ec2/prod/terraform.tfstate ;;
+            eks-demo) ROOT=terraform/eks; KEY=eks-demo/terraform.tfstate ;;
+          esac
+          export TF_DATA_DIR="$RUNNER_TEMP/terraform-$TARGET"
+          terraform -chdir="$ROOT" init -reconfigure -input=false \
+            -backend-config="bucket=$STATE_BUCKET" -backend-config="key=$KEY" -backend-config="region=sa-east-1"
+          terraform -chdir="$ROOT" apply -input=false "${GITHUB_WORKSPACE}/plan.tfplan"
+          printf 'ROOT=%s\n' "$ROOT" >> "$GITHUB_ENV"
+      - uses: actions/setup-go@v5
+        if: ${{ inputs.action == 'apply' && inputs.target != 'eks-demo' }}
+        with:
+          go-version-file: app/go.mod
+      - name: Deploy EC2 through Ansible SSM
+        if: ${{ inputs.action == 'apply' && inputs.target != 'eks-demo' }}
+        env:
+          ANSIBLE_SSM_BUCKET: ${{ vars.ANSIBLE_SSM_BUCKET }}
+          AWS_REGION: sa-east-1
         run: |
-          VERSIONS="$(aws s3api list-object-versions \
-            --bucket "${STATE_BUCKET}" \
-            --query='Versions[].{Key:Key,VersionId:VersionId}' \
-            --output json)"
-          if [ "${VERSIONS}" != "null" ] && [ "${VERSIONS}" != "[]" ]; then
-            printf '{"Objects":%s,"Quiet":true}\n' "${VERSIONS}" > /tmp/s3-versions.json
-            aws s3api delete-objects --bucket "${STATE_BUCKET}" --delete file:///tmp/s3-versions.json
-          fi
-
-          DELETE_MARKERS="$(aws s3api list-object-versions \
-            --bucket "${STATE_BUCKET}" \
-            --query='DeleteMarkers[].{Key:Key,VersionId:VersionId}' \
-            --output json)"
-          if [ "${DELETE_MARKERS}" != "null" ] && [ "${DELETE_MARKERS}" != "[]" ]; then
-            printf '{"Objects":%s,"Quiet":true}\n' "${DELETE_MARKERS}" > /tmp/s3-delete-markers.json
-            aws s3api delete-objects --bucket "${STATE_BUCKET}" --delete file:///tmp/s3-delete-markers.json
-          fi
-
-      - name: Remover bucket S3 do state
-        if: ${{ inputs.destroy_bootstrap }}
-        run: aws s3 rb "s3://${STATE_BUCKET}"
-
-  destroy-guard:
-    name: Bloqueio de destruicao sem confirmacao
-    if: ${{ inputs.action == 'destroy' && inputs.confirm_destroy != 'DESTROY' }}
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Parar destroy inseguro
+          : "${ANSIBLE_SSM_BUCKET:?Configure dedicated unversioned transfer bucket}"
+          pip install ansible-core boto3 botocore
+          ansible-galaxy collection install -r ansible/requirements.yml
+          curl -fsSL https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb -o "$RUNNER_TEMP/session-manager-plugin.deb"
+          sudo dpkg -i "$RUNNER_TEMP/session-manager-plugin.deb"
+          command -v session-manager-plugin
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go -C app build -o server-linux-amd64 ./cmd/server
+          TERRAFORM_DIR="${GITHUB_WORKSPACE}/${ROOT}" ./scripts/generate-inventory.sh
+          ansible-playbook -i ansible/inventory.ini ansible/playbook.yml
+          curl --fail --retry 12 --retry-delay 5 "$(terraform -chdir="$ROOT" output -raw public_url)/ready"
+      - uses: actions/setup-go@v5
+        if: ${{ inputs.action == 'apply' && inputs.target == 'eks-demo' }}
+        with:
+          go-version-file: app/go.mod
+      - uses: azure/setup-helm@v4
+        if: ${{ inputs.action == 'apply' && inputs.target == 'eks-demo' }}
+        with:
+          version: v3.17.3
+      - name: Deploy EKS through Helm
+        if: ${{ inputs.action == 'apply' && inputs.target == 'eks-demo' }}
         run: |
-          printf 'Destroy bloqueado. Defina confirm_destroy=DESTROY para continuar.\n'
-          exit 1
+          CLUSTER="$(terraform -chdir=terraform/eks output -raw cluster_name)"
+          REPOSITORY="$(terraform -chdir=terraform/eks output -raw ecr_repository_url)"
+          REGISTRY="${REPOSITORY%%/*}"
+          TAG="${GITHUB_SHA}"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
+          docker build --build-arg "VERSION=$TAG" -t "$REPOSITORY:$TAG" app
+          docker push "$REPOSITORY:$TAG"
+          aws eks update-kubeconfig --name "$CLUSTER" --region sa-east-1
+          helm lint helm/web-app
+          helm upgrade --install web-app helm/web-app --namespace web-app --create-namespace \
+            --set "image.repository=$REPOSITORY" --set "image.tag=$TAG" \
+            --wait --atomic --timeout 10m
+          kubectl -n web-app rollout status deployment/web-app --timeout=10m

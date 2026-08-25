@@ -1,37 +1,115 @@
 ---
-- name: Configure NGINX web server
+- name: Deploy Go CRUD service through Systems Manager
   hosts: web
   become: true
-  gather_facts: true
+  gather_facts: false
 
   handlers:
+    - name: Restart web app
+      ansible.builtin.systemd:
+        name: web-app
+        state: restarted
+        daemon_reload: true
+
     - name: Restart nginx
-      ansible.builtin.service:
+      ansible.builtin.systemd:
         name: nginx
         state: restarted
 
   tasks:
-    - name: Update apt cache
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: 3600
-
-    - name: Install nginx
+    - name: Install NGINX
       ansible.builtin.apt:
         name: nginx
         state: present
+        update_cache: true
+        cache_valid_time: 3600
 
-    - name: Publish web page
+    - name: Create service account
+      ansible.builtin.user:
+        name: webapp
+        system: true
+        create_home: false
+        shell: /usr/sbin/nologin
+
+    - name: Create persistent database directory
+      ansible.builtin.file:
+        path: /var/lib/web-app
+        state: directory
+        owner: webapp
+        group: webapp
+        mode: '0750'
+
+    - name: Install versioned Go binary
       ansible.builtin.copy:
-        src: files/index.html
-        dest: /var/www/html/index.html
+        src: "{{ playbook_dir }}/../app/server-linux-amd64"
+        dest: /usr/local/bin/web-app
         owner: root
         group: root
-        mode: "0644"
+        mode: '0755'
+      notify: Restart web app
+
+    - name: Install systemd unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/web-app.service
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Terraform laboratory Go CRUD service
+          After=network-online.target
+          Wants=network-online.target
+          [Service]
+          User=webapp
+          Group=webapp
+          Environment=DB_PATH=/var/lib/web-app/tasks.db
+          Environment=LISTEN_ADDR=127.0.0.1:8080
+          ExecStart=/usr/local/bin/web-app
+          Restart=on-failure
+          NoNewPrivileges=true
+          ProtectSystem=strict
+          ReadWritePaths=/var/lib/web-app
+          [Install]
+          WantedBy=multi-user.target
+      notify: Restart web app
+
+    - name: Configure NGINX reverse proxy
+      ansible.builtin.copy:
+        dest: /etc/nginx/sites-available/default
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          server {
+              listen 80 default_server;
+              location / {
+                  proxy_pass http://127.0.0.1:8080;
+                  proxy_set_header Host $host;
+              }
+          }
       notify: Restart nginx
 
-    - name: Ensure nginx is enabled and running
-      ansible.builtin.service:
-        name: nginx
-        state: started
+    - name: Ensure Go service is enabled and running
+      ansible.builtin.systemd:
+        name: web-app
         enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Ensure NGINX is enabled and running
+      ansible.builtin.systemd:
+        name: nginx
+        enabled: true
+        state: started
+
+    - name: Apply pending changes before health check
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify readiness locally
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8080/ready
+        status_code: 200
+      register: readiness
+      retries: 12
+      delay: 5
+      until: readiness.status == 200

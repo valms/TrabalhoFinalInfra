@@ -7,6 +7,10 @@
 *.tfstate
 *.tfstate.*
 *.tfvars
+backend.hcl
+backend-*.hcl
+.terraform-data/
+graphify-out/
 crash.log
 crash.*.log
 override.tf
@@ -19,6 +23,8 @@ override.tf.json
 
 # Ansible
 ansible/inventory.ini
+app/server-linux-amd64
+app/server
 *.retry
 
 # Secrets and local credentials
@@ -30,6 +36,9 @@ id_ed25519
 id_ed25519.pub
 .env
 .env.*
+*.db
+*.db-shm
+*.db-wal
 
 # Logs and OS files
 *.log

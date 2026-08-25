@@ -1,590 +1,117 @@
-# Trabalho Final Integrador - Terraform, AWS e Ansible
+# TrabalhoFinalInfra — laboratório público de infraestrutura
 
-Projeto para provisionar uma instancia EC2 na AWS com Terraform e configurar um servidor NGINX com Ansible, publicando uma pagina web acessivel pela internet.
+Laboratório AWS com dois caminhos independentes para a mesma API Go: **EC2 configurada com Ansible via SSM** e **EKS com Helm**. Terraform provisiona a infraestrutura; GitHub Actions mostra o pipeline público e `Jenkinsfile` é exemplo equivalente. Este repositório não prova que esses caminhos já foram implantados na AWS.
 
-## Objetivo
-
-Atender ao trabalho final integrador com uma entrega organizada, segura e demonstravel por evidencias.
-
-- Terraform cria a infraestrutura AWS.
-- Ansible configura o servidor e publica a pagina web.
-- Output do Terraform alimenta o inventario do Ansible.
-- GitHub Actions executa deploy, validacao de idempotencia e destroy.
-- Evidencias ficam organizadas em linha do tempo.
-
-## Criterios Atendidos
-
-- Codigo Terraform funcional e organizado em arquivos `.tf` por responsabilidade.
-- Playbook Ansible idempotente, com validacao automatica de `changed=0` na segunda execucao.
-- Integracao Terraform-Ansible via `terraform output` e script de inventario.
-- Linha do tempo de evidencias em `docs/evidencias.md`.
-- Higiene de ambiente com `terraform destroy`, `.gitignore` para estados, inventarios e chaves, e secrets fora do codigo.
+> This is a public laboratory project. Production banking implementations are confidential and are not included in this repository.
 
 ## Arquitetura
 
-Fluxo principal:
-
 ```text
-GitHub Actions
-  -> prepara credenciais AWS e chave SSH
-  -> cria/valida bucket S3 do state
-  -> terraform init / validate / plan / apply
-  -> gera inventario Ansible com terraform output
-  -> aguarda SSH
-  -> executa playbook Ansible
-  -> executa playbook novamente para validar changed=0
-  -> exibe URL publica
-  -> destroy manual ao final
+Bootstrap Terraform → S3 state (versionado, lockfile) + S3 transferência Ansible (não versionado)
+                          │
+           ┌──────────────┴──────────────┐
+           ▼                             ▼
+  dev/prod: VPC → EC2              demo: VPC → EKS managed nodes
+              SSM → Ansible                    ECR → Helm → Pod + EBS PVC
+                     │                                    │
+                     └──── app Go: CRUD SQLite ───────────┘
 ```
 
-Arquitetura AWS:
+O root `terraform/` serve à EC2 dev/prod. Seu `backend.tf` é a única definição do backend S3; o EKS referencia esse arquivo por `terraform/eks/backend.tf` (link simbólico). Valores vêm de `terraform/env/{dev,prod}.tfvars`; `terraform init -backend-config` seleciona uma chave S3 distinta por alvo. EKS tem state próprio. `terraform/bootstrap` cria os buckets com state local separado (o bucket S3 não pode armazenar o próprio state antes de existir). A chave de dev preserva `trabalho-final/terraform.tfstate` do root original. **Não aplicar prod ou EKS sobre o state de dev.**
 
-```text
-VPC dedicada 10.0.0.0/16
-  -> Subnet publica 10.0.1.0/24
-    -> EC2 Ubuntu
-      -> NGINX
-      -> pagina em /var/www/html/index.html
+| Diretório | Uso |
+| --- | --- |
+| `app/` | Módulo `github.com/valms/TrabalhoFinalInfra/app`, servidor Go e Dockerfile |
+| `ansible/` | Provisionamento idempotente da EC2 por SSM; NGINX proxy e serviço systemd |
+| `terraform/` | Root EC2 existente: rede, SG, EC2/SSM e backend S3 compartilhado |
+| `terraform/env/` | Valores dev/prod da EC2 (`*.tfvars.example`) |
+| `terraform/bootstrap/` | Bucket de state e bucket temporário de transferência SSM |
+| `terraform/eks/` | EKS, managed nodes, NAT, EBS CSI e ECR, state próprio |
+| `helm/web-app/` | Chart EKS com uma réplica, PVC e probes |
+| `tools/infra-check/` | CLI demonstrativa de diagnóstico |
+| `docs/` | Baseline, roadmap, troubleshooting, rollback e incidente hipotético |
 
-Internet Gateway
-  -> Route Table publica
-    -> rota 0.0.0.0/0 para acesso HTTP publico
+## Rodar API localmente
 
-Security Group
-  -> entrada HTTP 80: 0.0.0.0/0
-  -> entrada SSH 22: somente IP publico do runner GitHub Actions /32
-  -> saida TCP 80 e 443 para atualizacao de pacotes
+```sh
+cd app
+go test ./...
+DB_PATH=./tasks.db LISTEN_ADDR=:8080 go run ./cmd/server
+curl -X POST http://localhost:8080/tasks -H 'Content-Type: application/json' -d '{"title":"Testar Terraform"}'
+curl http://localhost:8080/tasks
+curl http://localhost:8080/ready
 ```
 
-## Organizacao do Projeto
+Endpoints: `POST /tasks`, `GET /tasks`, `GET /tasks/{id}`, `PUT /tasks/{id}` (JSON com `title` e `completed`), `DELETE /tasks/{id}`, `GET /health`, `GET /ready`, `GET /version`. SQLite persiste no caminho `DB_PATH`; `*.db*` não entra no Git.
 
-```text
-.
-├── .github/workflows/deploy.yml
-├── ansible/
-│   ├── files/index.html
-│   └── playbook.yml
-├── docs/
-│   └── evidencias.md
-├── scripts/
-│   └── generate-inventory.sh
-└── terraform/
-    ├── backend.tf
-    ├── data.tf
-    ├── key_pair.tf
-    ├── locals.tf
-    ├── main.tf
-    ├── network.tf
-    ├── outputs.tf
-    ├── provider.tf
-    ├── security.tf
-    ├── variables.tf
-    └── versions.tf
+## Preparar AWS e state
+
+Requer Terraform compatível com `terraform/versions.tf`, AWS CLI, credenciais IAM com permissões explicitamente concedidas para recursos do laboratório, Ansible + coleção `amazon.aws`, Session Manager Plugin, Docker, Helm e kubectl. Preferir credenciais temporárias/OIDC no CI; workflow atual usa secrets AWS até configurar OIDC. O bucket histórico `unifor-terraform-state-trabalho-final` não foi encontrado na conta AWS consultada em 25/10/2026; confirme conta/região e crie/importe o backend antes do primeiro `init` remoto. Conferir conta antes de executar:
+
+```sh
+aws sts get-caller-identity
+cp terraform/bootstrap/env/bootstrap.tfvars.example terraform/bootstrap/env/bootstrap.tfvars
+# Edite nomes S3 globalmente únicos; se bucket de state legado já existir, importe-o antes de apply.
+terraform -chdir=terraform/bootstrap init
+terraform -chdir=terraform/bootstrap plan -var-file=env/bootstrap.tfvars
 ```
 
-## Abordagem Terraform
+Bucket de state legado pode já existir: importá-lo para `aws_s3_bucket.state` e os recursos separados de configuração após inspeção; nunca tentar criar outro com mesmo nome. Bucket de state tem `prevent_destroy` e histórico de versões; bucket SSM **não** é versionado e tem expiração de 1 dia. Runner Ansible precisa de `ssm:StartSession`, `ssm:TerminateSession` e permissões S3 `GetObject`, `PutObject`, `DeleteObject`, `ListBucket`, `GetBucketLocation` restritas ao bucket SSM. Role EC2 usa `AmazonSSMManagedInstanceCore`, sem chave SSH. Revisar IAM de EKS/ECR e permissões da conta antes de habilitar apply; ver [plugin Ansible SSM](https://docs.ansible.com/projects/ansible/latest/collections/amazon/aws/aws_ssm_connection.html).
 
-O Terraform foi separado por responsabilidade para facilitar leitura, correcao e apresentacao. O arquivo `main.tf` nao concentra mais toda a infraestrutura; ele fica apenas com a EC2.
+## EC2 dev / prod
 
-### Versoes e Provider
+Para **cada** ambiente, copiar o exemplo de `tfvars` e conferir os valores. Bucket vem de `STATE_BUCKET`; chaves diferentes selecionam states distintos. Após verificar o state legado (veja `docs/roadmap.md`), executar dev:
 
-O arquivo `terraform/versions.tf` fixa a versao minima do Terraform e a familia do AWS Provider.
-
-```hcl
-terraform {
-  required_version = ">= 1.6.0"
-
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 6.0"
-    }
-  }
-}
+```sh
+cp terraform/env/dev.tfvars.example terraform/env/dev.tfvars
+export STATE_BUCKET="nome-real-do-bucket-existente"
+export TF_DATA_DIR="$PWD/.terraform-data/ec2-dev"
+terraform -chdir=terraform init -reconfigure \
+  -backend-config="bucket=$STATE_BUCKET" \
+  -backend-config="key=trabalho-final/terraform.tfstate" \
+  -backend-config="region=sa-east-1"
+terraform -chdir=terraform validate
+terraform -chdir=terraform plan -var-file=env/dev.tfvars
+# Após revisar o plano: terraform -chdir=terraform apply -var-file=env/dev.tfvars
 ```
 
-O provider usa a regiao definida em variavel e aplica tags padrao em todos os recursos suportados.
+Para prod, copiar `env/prod.tfvars.example` para `env/prod.tfvars`, definir `TF_DATA_DIR="$PWD/.terraform-data/ec2-prod"`, usar `-backend-config="key=ec2/prod/terraform.tfstate"` no `init` e `-var-file=env/prod.tfvars` no `plan/apply`. Bucket e região são os mesmos do exemplo dev. **Valores diferentes sem chave de backend diferente não isolam state.** Diretórios `TF_DATA_DIR` separados evitam reutilizar metadados locais do backend ao trocar ambiente. Para deploy Ansible via SSM, compile `app/server-linux-amd64`, instale `amazon.aws` e Session Manager Plugin, exporte `AWS_REGION`, `ANSIBLE_SSM_BUCKET`, `TF_DATA_DIR` do ambiente escolhido e `TERRAFORM_DIR="$PWD/terraform"`; execute `scripts/generate-inventory.sh` e `ansible-playbook -i ansible/inventory.ini ansible/playbook.yml`. Aplique duas vezes e confirme idempotência. A EC2 usa NGINX como proxy para o app em `127.0.0.1:8080`; acesso HTTP é público, sem TLS neste laboratório.
 
-```hcl
-provider "aws" {
-  region = var.aws_region
+## EKS + Helm
 
-  default_tags {
-    tags = local.common_tags
-  }
-}
+O EKS é **provisionado** no root `terraform/eks`, não depende da EC2 Ansible. Use o mesmo `STATE_BUCKET` com chave `eks-demo/terraform.tfstate` e defina `kubernetes_version` atualmente suportada e `allowed_api_cidrs` restritos em `terraform/eks/env/demo.tfvars` (exemplo no mesmo diretório). Não abrir API para `0.0.0.0/0`. Cluster, node group, NAT gateway, EBS, ECR e CloudWatch **geram custos mesmo com app ocioso**. Control plane e nodes têm ciclo de vida distinto do caminho EC2.
+
+```sh
+cp terraform/eks/env/demo.tfvars.example terraform/eks/env/demo.tfvars
+# Ajuste versão suportada, CIDR da API e confirme duas zonas de disponibilidade existentes.
+terraform -chdir=terraform/eks init -reconfigure \
+  -backend-config="bucket=$STATE_BUCKET" \
+  -backend-config="key=eks-demo/terraform.tfstate" \
+  -backend-config="region=sa-east-1"
+terraform -chdir=terraform/eks plan -var-file=env/demo.tfvars
+# Após revisão: terraform -chdir=terraform/eks apply -var-file=env/demo.tfvars
+aws eks update-kubeconfig --region sa-east-1 --name "$(terraform -chdir=terraform/eks output -raw cluster_name)"
+helm lint helm/web-app
+helm template web-app helm/web-app
+helm upgrade --install web-app helm/web-app -n web-app --create-namespace \
+  --set image.repository=SEU_ECR --set image.tag=SEU_COMMIT --wait --atomic --timeout 10m
+kubectl -n web-app rollout status deployment/web-app
+kubectl -n web-app port-forward service/web-app 8080:80
+# Outro terminal: curl http://localhost:8080/ready
 ```
 
-### State Remoto
+Publique imagem no ECR antes do Helm (`deploy.yml` demonstra build/push). PVC usa EBS CSI e StorageClass `gp3`; sem driver/role corretos, pod não fica ready. SQLite exige **uma réplica** e estratégia `Recreate`: breve interrupção no upgrade, sem promessa de zero downtime. PVC e StorageClass ficam retidos para proteção de dados; limpeza após destroy exige decisão explícita.
 
-O state fica em S3 para evitar depender de estado local da maquina ou do runner. O bucket e preparado pela pipeline antes do `terraform init`.
+## CI, Jenkins e rollback
 
-```hcl
-terraform {
-  backend "s3" {
-    bucket       = "unifor-terraform-state-trabalho-final"
-    key          = "trabalho-final/terraform.tfstate"
-    region       = "sa-east-1"
-    encrypt      = true
-    use_lockfile = true
-  }
-}
-```
+`.github/workflows/quality.yml` roda testes Go, fmt/validate Terraform, TFLint, Helm, Checkov e Gitleaks. `.github/workflows/deploy.yml` é **manual**, produz plano por alvo (`ec2-dev`, `ec2-prod`, `eks-demo`), aplica após gate de GitHub Environment, exige `DESTROY` para destruição, e faz deploy EC2 com Ansible ou EKS com Helm. Configure `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `STATE_BUCKET`, `ANSIBLE_SSM_BUCKET`, `EKS_KUBERNETES_VERSION`, `EKS_ALLOWED_API_CIDRS` e `EKS_AVAILABILITY_ZONES` (lista Terraform/HCL com duas zonas reais); crie ambientes protegidos no GitHub antes de liberar apply. Plano binário é artefato de curta retenção, potencialmente sensível; restringir acesso ao repositório/artefatos. Checkov possui exceções **por recurso**, justificadas no HCL para escolhas deste laboratório (HTTP público, bucket temporário sem versionamento e custos de logs/replicação/KMS). Não tratar isso como aprovação para produção.
 
-### Tags Padrao
+`Jenkinsfile` mostra parâmetros `TARGET=ec2|eks`, `ENVIRONMENT=dev|prod|demo`, `ACTION=plan|apply|destroy`; `CONFIRM_DESTROY=DESTROY` é obrigatório para destroy. O agente precisa de `STATE_BUCKET`, de `TF_VAR_kubernetes_version`, `TF_VAR_allowed_api_cidrs` e `TF_VAR_availability_zones` para EKS, além de Terraform, Go, Docker, kubectl, Helm, Checkov, Gitleaks, Ansible, Session Manager Plugin, AWS CLI e credenciais/permissões fora do repositório. **The repository includes both GitHub Actions and Jenkins examples. The public repository uses GitHub Actions for demonstration, while Jenkins reflects the deployment model used in production environments.** Isso não afirma que este Jenkinsfile foi usado profissionalmente.
 
-Tags comuns ajudam a identificar recursos no console AWS e comprovam que os recursos pertencem ao trabalho.
+Leia `docs/troubleshooting.md` e `docs/rollback.md` antes de executar rollback; `docs/incident-example.md` é simulação. `helm rollback` recupera aplicação, não desfaz dados SQLite. Use `terraform plan -refresh-only` para investigar drift. `infra-check` em `tools/infra-check/README.md` é demonstrativo, sem alegar adoção por times.
 
-```hcl
-locals {
-  common_tags = {
-    Project     = var.project_name
-    ManagedBy   = "terraform"
-    Environment = var.environment
-  }
-}
-```
+Permissões e separação de roles: `docs/iam.md`. Lacunas e limites do grafo gerado: `docs/graph-gaps.md`.
 
-### AMI Ubuntu
+## Linha do tempo e limites
 
-A AMI nao fica hardcoded. O Terraform busca a imagem Ubuntu 22.04 mais recente do owner oficial da Canonical.
-
-```hcl
-data "aws_ami" "ubuntu" {
-  most_recent = true
-  owners      = ["099720109477"]
-
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-}
-```
-
-### EC2
-
-A EC2 fica na subnet publica da VPC do projeto. O volume raiz usa `gp3` e criptografia ativada.
-
-```hcl
-resource "aws_instance" "web" {
-  ami                         = data.aws_ami.ubuntu.id
-  instance_type               = var.instance_type
-  key_name                    = aws_key_pair.this.key_name
-  subnet_id                   = aws_subnet.public.id
-  vpc_security_group_ids      = [aws_security_group.web.id]
-  associate_public_ip_address = true
-
-  root_block_device {
-    volume_size = var.root_volume_size
-    volume_type = "gp3"
-    encrypted   = true
-  }
-
-  tags = {
-    Name = "${var.project_name}-web"
-  }
-}
-```
-
-## Abordagem de Rede
-
-Foi criada uma VPC dedicada em vez de usar a VPC default da conta AWS. Isso melhora isolamento, deixa a arquitetura mais explicita e gera evidencias melhores para o trabalho.
-
-### VPC e Subnet Publica
-
-```hcl
-resource "aws_vpc" "this" {
-  cidr_block           = var.vpc_cidr_block
-  enable_dns_hostnames = true
-  enable_dns_support   = true
-
-  tags = {
-    Name = "${var.project_name}-vpc"
-  }
-}
-
-resource "aws_subnet" "public" {
-  vpc_id                  = aws_vpc.this.id
-  cidr_block              = var.public_subnet_cidr_block
-  map_public_ip_on_launch = true
-
-  tags = {
-    Name = "${var.project_name}-public-subnet"
-  }
-}
-```
-
-### Internet Gateway e Route Table
-
-Como a pagina precisa ficar acessivel pela internet, a subnet publica recebe uma rota default para o Internet Gateway.
-
-```hcl
-resource "aws_internet_gateway" "this" {
-  vpc_id = aws_vpc.this.id
-
-  tags = {
-    Name = "${var.project_name}-igw"
-  }
-}
-
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.this.id
-
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.this.id
-  }
-
-  tags = {
-    Name = "${var.project_name}-public-rt"
-  }
-}
-
-resource "aws_route_table_association" "public" {
-  subnet_id      = aws_subnet.public.id
-  route_table_id = aws_route_table.public.id
-}
-```
-
-## Abordagem de Seguranca
-
-A pagina precisa ser publica, mas isso nao significa liberar tudo. A abordagem adotada e manter HTTP publico e restringir SSH.
-
-### Security Group na VPC
-
-O Security Group pertence explicitamente a VPC criada pelo Terraform.
-
-```hcl
-resource "aws_security_group" "web" {
-  name        = "${var.project_name}-web-sg"
-  description = "Permite HTTP publico e SSH restrito para o trabalho final"
-  vpc_id      = aws_vpc.this.id
-
-  tags = {
-    Name = "${var.project_name}-web-sg"
-  }
-}
-```
-
-### HTTP Publico
-
-HTTP fica aberto para `0.0.0.0/0` porque esse e o requisito funcional: a aplicacao deve estar no ar e acessivel publicamente.
-
-```hcl
-resource "aws_vpc_security_group_ingress_rule" "http" {
-  security_group_id = aws_security_group.web.id
-  description       = "HTTP"
-  cidr_ipv4         = "0.0.0.0/0"
-  from_port         = 80
-  ip_protocol       = "tcp"
-  to_port           = 80
-}
-```
-
-### SSH Restrito
-
-SSH nao usa `0.0.0.0/0`. A variavel vem vazia por padrao e bloqueia explicitamente SSH aberto para a internet.
-
-```hcl
-variable "allowed_ssh_cidr_blocks" {
-  description = "Blocos CIDR permitidos para acesso SSH. Use apenas IPs publicos especificos com /32."
-  type        = list(string)
-  default     = []
-
-  validation {
-    condition = alltrue([
-      for cidr in var.allowed_ssh_cidr_blocks :
-      can(cidrnetmask(cidr)) && cidr != "0.0.0.0/0"
-    ])
-    error_message = "allowed_ssh_cidr_blocks deve conter CIDRs IPv4 validos e nao pode liberar SSH para 0.0.0.0/0."
-  }
-}
-```
-
-A regra SSH usa somente os CIDRs permitidos.
-
-```hcl
-resource "aws_vpc_security_group_ingress_rule" "ssh" {
-  for_each = toset(var.allowed_ssh_cidr_blocks)
-
-  security_group_id = aws_security_group.web.id
-  description       = "SSH"
-  cidr_ipv4         = each.value
-  from_port         = 22
-  ip_protocol       = "tcp"
-  to_port           = 22
-}
-```
-
-Na pipeline, o IP publico do runner e descoberto e enviado ao Terraform como `/32`.
-
-```yaml
-- name: Preparar chave SSH
-  env:
-    EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-  run: |
-    mkdir -p ~/.ssh
-    printf '%s\n' "${EC2_SSH_PRIVATE_KEY}" > ~/.ssh/unifor-terraform
-    chmod 600 ~/.ssh/unifor-terraform
-    PUBLIC_KEY="$(ssh-keygen -y -f ~/.ssh/unifor-terraform)"
-    printf 'TF_VAR_public_key=%s\n' "${PUBLIC_KEY}" >> "${GITHUB_ENV}"
-
-    RUNNER_PUBLIC_IP="$(curl -fsSL https://checkip.amazonaws.com | tr -d '[:space:]')"
-    printf 'TF_VAR_allowed_ssh_cidr_blocks=["%s/32"]\n' "${RUNNER_PUBLIC_IP}" >> "${GITHUB_ENV}"
-```
-
-### Egress Restrito
-
-A saida da EC2 nao fica totalmente aberta. Para este trabalho, basta permitir HTTP e HTTPS para atualizacao de pacotes e instalacao do NGINX.
-
-```hcl
-resource "aws_vpc_security_group_egress_rule" "http_ipv4" {
-  security_group_id = aws_security_group.web.id
-  description       = "Saida HTTP para atualizacao de pacotes"
-  cidr_ipv4         = "0.0.0.0/0"
-  from_port         = 80
-  ip_protocol       = "tcp"
-  to_port           = 80
-}
-
-resource "aws_vpc_security_group_egress_rule" "https_ipv4" {
-  security_group_id = aws_security_group.web.id
-  description       = "Saida HTTPS para atualizacao de pacotes"
-  cidr_ipv4         = "0.0.0.0/0"
-  from_port         = 443
-  ip_protocol       = "tcp"
-  to_port           = 443
-}
-```
-
-## Abordagem de Chave SSH
-
-A AWS recebe apenas a chave publica. A chave privada fica no GitHub Secret e e usada apenas pelo Ansible para acessar a EC2.
-
-Geracao local da chave:
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/unifor-terraform
-```
-
-Cadastro do secret:
-
-```bash
-cat ~/.ssh/unifor-terraform
-```
-
-O Terraform registra a chave publica como Key Pair EC2.
-
-```hcl
-resource "aws_key_pair" "this" {
-  key_name   = var.key_name
-  public_key = var.public_key
-}
-```
-
-## Abordagem Ansible
-
-O playbook usa modulos declarativos do Ansible. Isso favorece idempotencia: se o estado ja estiver correto, a segunda execucao nao deve alterar nada.
-
-```yaml
----
-- name: Configure NGINX web server
-  hosts: web
-  become: true
-  gather_facts: true
-
-  handlers:
-    - name: Restart nginx
-      ansible.builtin.service:
-        name: nginx
-        state: restarted
-
-  tasks:
-    - name: Update apt cache
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: 3600
-
-    - name: Install nginx
-      ansible.builtin.apt:
-        name: nginx
-        state: present
-
-    - name: Publish web page
-      ansible.builtin.copy:
-        src: files/index.html
-        dest: /var/www/html/index.html
-        owner: root
-        group: root
-        mode: "0644"
-      notify: Restart nginx
-
-    - name: Ensure nginx is enabled and running
-      ansible.builtin.service:
-        name: nginx
-        state: started
-        enabled: true
-```
-
-Decisoes importantes:
-
-- `apt state=present`: instala NGINX apenas se ele ainda nao estiver instalado.
-- `copy`: altera a pagina apenas se o conteudo, dono, grupo ou modo forem diferentes.
-- `notify`: reinicia NGINX somente quando a pagina muda.
-- `service state=started enabled=true`: garante servico ativo e habilitado no boot.
-- `cache_valid_time=3600`: evita atualizar cache apt desnecessariamente em execucoes proximas.
-
-## Integracao Terraform e Ansible
-
-O Ansible nao recebe IP fixo manual. O inventario e gerado a partir dos outputs do Terraform.
-
-Outputs relevantes:
-
-```hcl
-output "public_ip" {
-  description = "IP publico usado pelo inventario do Ansible."
-  value       = aws_instance.web.public_ip
-}
-
-output "ssh_user" {
-  description = "Usuario SSH padrao das AMIs Ubuntu."
-  value       = "ubuntu"
-}
-```
-
-Script de inventario:
-
-```bash
-PUBLIC_IP="$(terraform -chdir="${TERRAFORM_DIR}" output -raw public_ip)"
-SSH_USER="$(terraform -chdir="${TERRAFORM_DIR}" output -raw ssh_user)"
-
-{
-  printf '[web]\n'
-  printf "web ansible_host=%s ansible_user=%s ansible_ssh_private_key_file=%s ansible_ssh_common_args='-o StrictHostKeyChecking=no'\n" \
-    "${PUBLIC_IP}" \
-    "${SSH_USER}" \
-    "${SSH_KEY_FILE}"
-} > "${INVENTORY_FILE}"
-```
-
-Inventario gerado esperado:
-
-```ini
-[web]
-web ansible_host=<public_ip> ansible_user=ubuntu ansible_ssh_private_key_file=/home/runner/.ssh/unifor-terraform ansible_ssh_common_args='-o StrictHostKeyChecking=no'
-```
-
-## Validacao de Idempotencia
-
-A pipeline roda o playbook duas vezes. A segunda execucao deve terminar com `changed=0`; se nao terminar, o workflow falha.
-
-```yaml
-- name: Validar idempotencia Ansible
-  run: |
-    set -o pipefail
-    ansible-playbook -i ansible/inventory.ini ansible/playbook.yml | tee ansible-second-run.log
-    if ! grep -Eq 'changed=0[[:space:]]+' ansible-second-run.log; then
-      printf 'Playbook nao ficou idempotente: segunda execucao teve changed diferente de 0.\n'
-      exit 1
-    fi
-```
-
-## Deploy Pela Pipeline
-
-Workflow: `.github/workflows/deploy.yml`.
-
-Execucao automatica:
-
-- Push na branch `feature/infra-ec2-ansible` executa deploy.
-
-Execucao manual:
-
-- `action=deploy`: cria S3 do state, executa Terraform e roda Ansible.
-- `action=destroy`: destroi a infraestrutura principal.
-- `confirm_destroy=DESTROY`: confirmacao obrigatoria para destroy.
-- `destroy_bootstrap=true`: remove tambem o bucket S3 de state.
-
-Passos principais da pipeline:
-
-```yaml
-- name: Terraform init
-  run: terraform -chdir=terraform init
-
-- name: Terraform validate
-  run: terraform -chdir=terraform validate
-
-- name: Terraform plan
-  run: terraform -chdir=terraform plan
-
-- name: Terraform apply
-  run: terraform -chdir=terraform apply -auto-approve
-
-- name: Gerar inventario Ansible
-  run: ./scripts/generate-inventory.sh
-
-- name: Executar playbook Ansible
-  run: ansible-playbook -i ansible/inventory.ini ansible/playbook.yml
-```
-
-## Destroy Pela Pipeline
-
-Use o destroy ao final da apresentacao para cumprir a higiene de ambiente e evitar custos na AWS.
-
-Passo a passo:
-
-1. Acesse o repositorio no GitHub.
-2. Abra a aba `Actions`.
-3. Selecione o workflow `Deploy Infraestrutura AWS`.
-4. Clique em `Run workflow`.
-5. Em `Use workflow from`, selecione a branch que contem o workflow.
-6. Em `action`, selecione `destroy`.
-7. Em `confirm_destroy`, digite exatamente `DESTROY`.
-8. Em `destroy_bootstrap`, escolha se o bucket S3 de state tambem sera removido.
-9. Clique em `Run workflow`.
-
-Opcoes de destroy:
-
-- `destroy_bootstrap=false`: remove apenas a infraestrutura principal criada pelo Terraform, como EC2, VPC, subnet, Internet Gateway, Route Table, Security Group e Key Pair.
-- `destroy_bootstrap=true`: remove a infraestrutura principal e tambem apaga o bucket S3 usado pelo state remoto.
-
-O workflow exige `confirm_destroy=DESTROY` para evitar destruicao acidental.
-
-## Evidencias Para Apresentacao
-
-Use os logs do GitHub Actions e preencha `docs/evidencias.md` com:
-
-- `terraform init`.
-- `terraform validate`.
-- `terraform plan`.
-- `terraform apply`.
-- console da AWS mostrando VPC, subnet, EC2 e Security Group.
-- inventario gerado pelo output do Terraform.
-- primeira execucao do playbook.
-- segunda execucao do playbook com `changed=0`.
-- URL publica da aplicacao.
-- `terraform destroy`.
-
-## Secrets Obrigatorios
-
-Cadastre em `Settings > Secrets and variables > Actions`:
-
-- `AWS_ACCESS_KEY_ID`.
-- `AWS_SECRET_ACCESS_KEY`.
-- `EC2_SSH_PRIVATE_KEY`.
-
-`AWS_REGION` ja esta definido no workflow como `sa-east-1`.
-
-## Higiene
-
-- Nenhuma chave privada entra no Git.
-- Nenhum `tfstate` entra no Git.
-- Nenhum `tfvars` entra no Git.
-- Inventario Ansible gerado nao entra no Git.
-- Credenciais AWS ficam em GitHub Secrets.
-- SSH nao fica aberto para `0.0.0.0/0`.
-- Recursos AWS devem ser removidos ao final com `action=destroy`.
+Histórico anterior: 08–09/08/2026; fatos em `docs/current-state.md`. O commit desta ampliação será datado **10/08/2026 por solicitação**, embora o trabalho e a verificação tenham ocorrido em **25/10/2026**. Sem execução comprovada em AWS, não alegar deploy, disponibilidade, rollback automático na EC2, ALB ou número de times usuários. Não há ALB neste laboratório; exemplos de health usam `/ready`. Banco SQLite/EBS limita escala e não oferece HA; para múltiplas réplicas, migrar para banco externo compartilhado. Produção bancária não faz parte deste repositório.

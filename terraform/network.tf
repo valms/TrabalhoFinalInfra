@@ -1,4 +1,5 @@
 resource "aws_vpc" "this" {
+  # checkov:skip=CKV2_AWS_11:VPC Flow Logs are not provisioned in the cost-limited demo account.
   cidr_block           = var.vpc_cidr_block
   enable_dns_hostnames = true
   enable_dns_support   = true
@@ -11,11 +12,17 @@ resource "aws_vpc" "this" {
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.this.id
   cidr_block              = var.public_subnet_cidr_block
-  map_public_ip_on_launch = true
+  map_public_ip_on_launch = false
 
   tags = {
     Name = "${var.project_name}-public-subnet"
   }
+}
+
+resource "aws_default_security_group" "this" {
+  vpc_id  = aws_vpc.this.id
+  ingress = []
+  egress  = []
 }
 
 resource "aws_internet_gateway" "this" {

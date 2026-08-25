@@ -1,0 +1,8 @@
+title = "TrabalhoFinalInfra secrets scanning"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Terraform downloads and local backend metadata are generated, ignored artifacts"
+paths = ['''(^|/)\.terraform(/|$)''', '''(^|/)\.terraform-data(/|$)''']

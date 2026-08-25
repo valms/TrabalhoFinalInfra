@@ -2,21 +2,17 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TERRAFORM_DIR="${ROOT_DIR}/terraform"
+TERRAFORM_DIR="${TERRAFORM_DIR:-${ROOT_DIR}/terraform}"
 INVENTORY_FILE="${ROOT_DIR}/ansible/inventory.ini"
-SSH_KEY_FILE="${SSH_KEY_FILE:-${HOME}/.ssh/unifor-terraform}"
+: "${ANSIBLE_SSM_BUCKET:?Set ANSIBLE_SSM_BUCKET to the dedicated, unversioned transfer bucket}"
+: "${AWS_REGION:?Set AWS_REGION}"
 
-PUBLIC_IP="$(terraform -chdir="${TERRAFORM_DIR}" output -raw public_ip)"
-SSH_USER="$(terraform -chdir="${TERRAFORM_DIR}" output -raw ssh_user)"
-
-mkdir -p "$(dirname "${INVENTORY_FILE}")"
+INSTANCE_ID="$(terraform -chdir="${TERRAFORM_DIR}" output -raw instance_id)"
 
 {
   printf '[web]\n'
-  printf "web ansible_host=%s ansible_user=%s ansible_ssh_private_key_file=%s ansible_ssh_common_args='-o StrictHostKeyChecking=no'\n" \
-    "${PUBLIC_IP}" \
-    "${SSH_USER}" \
-    "${SSH_KEY_FILE}"
+  printf '%s ansible_connection=amazon.aws.aws_ssm ansible_aws_ssm_bucket_name=%s ansible_aws_ssm_region=%s\n' \
+    "${INSTANCE_ID}" "${ANSIBLE_SSM_BUCKET}" "${AWS_REGION}"
 } > "${INVENTORY_FILE}"
 
 printf 'Inventory generated at %s\n' "${INVENTORY_FILE}"

@@ -1,0 +1,53 @@
+name: Quality checks
+on:
+  pull_request:
+  push:
+    branches: [main, feature/eks]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+      - name: Go tests
+        run: go test ./...
+        working-directory: app
+      - uses: hashicorp/setup-terraform@v3
+      - name: Terraform format
+        run: terraform fmt -check -recursive terraform
+      - name: Terraform validate
+        run: |
+          for dir in terraform terraform/bootstrap terraform/eks; do
+            terraform -chdir="$dir" init -backend=false -input=false
+            terraform -chdir="$dir" validate
+          done
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+      - name: Helm lint and render
+        run: |
+          helm lint helm/web-app
+          helm template web-app helm/web-app >/dev/null
+      - name: TFLint
+        uses: terraform-linters/setup-tflint@v4
+      - run: |
+          for dir in terraform terraform/bootstrap terraform/eks; do
+            tflint --chdir "$dir" --init
+            tflint --chdir "$dir"
+          done
+      - name: Checkov
+        run: |
+          pip install checkov
+          checkov -d terraform --framework terraform
+      - name: Secret scanning
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .gitleaks.toml

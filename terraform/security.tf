@@ -13,6 +13,7 @@ resource "aws_security_group" "web" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "http" {
+  # checkov:skip=CKV_AWS_260:HTTP is intentionally public for this EC2 lab; no SSH ingress.
   security_group_id = aws_security_group.web.id
   description       = "HTTP"
   cidr_ipv4         = "0.0.0.0/0"

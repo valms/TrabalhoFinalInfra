@@ -1,0 +1,2 @@
+state_bucket_name        = "choose-unique-state-bucket-name"
+ssm_transfer_bucket_name = "choose-unique-ansible-transfer-bucket-name"
